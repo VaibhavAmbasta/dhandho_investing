@@ -199,7 +199,8 @@ def _pick_one(facts: list[Fact]) -> tuple[Fact, str | None]:
 def _evaluate(strategy: Strategy, found: dict[str, Fact]) -> tuple[float, list[Fact]] | None:
     if any(t not in found for t in strategy.required):
         return None
-    used = [found[t] for t in strategy.tags if t in found]
+    skip = {comp for comp, container in strategy.contained_in if container in found}
+    used = [found[t] for t in strategy.tags if t in found and t not in skip]
     if not used:
         return None
     return sum(f.val for f in used), used
@@ -255,11 +256,33 @@ def compute_concept(
                 )
                 break
 
+        if vintages and spec.not_applicable_before and p.end < spec.not_applicable_before \
+                and all(v.value == 0 for v in vintages):
+            # A zero before the standard took effect is the "—" in a pre-adoption
+            # comparative column, not a real balance.
+            values_out.append(ConceptValue(
+                fiscal_year=p.fiscal_year, concept=spec.name, period_end=p.end, status="not_applicable",
+                unit=spec.unit, reason=(spec.na_reason or "not applicable")
+                + " (filing tagged 0 for a pre-adoption comparative period; treated as not applicable)"))
+            continue
+
         if vintages:
             vintages.sort(key=lambda v: (v.filed, v.accn))
-            first, latest = vintages[0], vintages[-1]
+            # Best-ranked strategy wins; within it, the latest filing. Ranking first matters:
+            # later 10-Ks often repeat an old balance under a different tag (e.g. the
+            # cash-flow statement's opening cash incl. restricted cash), which must not
+            # displace the balance-sheet tag.
+            best_rank = min(v.strategy.rank for v in vintages)
+            same = [v for v in vintages if v.strategy.rank == best_rank]
+            first, latest = same[0], same[-1]
             denom = abs(first.value) or 1.0
-            restated = any(abs(v.value - first.value) / denom > restatement_tolerance for v in vintages[1:])
+            restated = any(abs(v.value - first.value) / denom > restatement_tolerance for v in same[1:])
+            others = sorted({(v.strategy.label, v.value) for v in vintages if v.strategy.rank != best_rank
+                             and abs(v.value - latest.value) / (abs(latest.value) or 1.0) > restatement_tolerance})
+            if others:
+                latest.notes = latest.notes + [
+                    "other tags reported different values: "
+                    + "; ".join(f"{label}={val:,.0f}" for label, val in others)]
             values_out.append(
                 ConceptValue(
                     fiscal_year=p.fiscal_year,

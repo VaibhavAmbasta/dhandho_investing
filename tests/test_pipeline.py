@@ -18,8 +18,9 @@ def test_end_to_end_offline(project, capsys):
     conn.row_factory = sqlite3.Row
     rev = {r["fiscal_year"]: r for r in conn.execute(
         "SELECT * FROM concept_values WHERE concept='revenue'")}
-    assert rev[2019]["value"] == 1150 and rev[2019]["first_value"] == 1100 and rev[2019]["restated"] == 1
-    assert rev[2019]["filed"] == "2020-10-30"
+    assert rev[2019]["value"] == 1150 and rev[2019]["restated"] == 0
+    assert rev[2019]["filed"] == "2020-10-30" and "SalesRevenueNet=1,100" in rev[2019]["notes"]
+    assert rev[2021]["value"] == 1310 and rev[2021]["first_value"] == 1300 and rev[2021]["restated"] == 1
     # schema forbids a NULL value without a reason
     for r in conn.execute("SELECT * FROM concept_values WHERE status != 'ok'"):
         assert r["value"] is None and r["reason"]
@@ -53,6 +54,9 @@ def test_point_in_time(project):
     assert rev("2020-12-31") == {2018: 1000, 2019: 1150, 2020: 1200}  # after ASC 606 restatement
     assert rev("2021-12-31")[2021] == 1300                          # before the 10-K/A
     assert rev("2022-06-30")[2021] == 1310
+
+    df = db.values_as_of(conn, 1234567, "2021-01-01")
+    assert df[(df.concept == "cash") & (df.fiscal_year == 2019)]["value"].tolist() == [60]  # rank A beats later rank B
 
 
 def test_unknown_ticker_logged_not_silent(project, capsys):

@@ -91,7 +91,13 @@ def build(conn: sqlite3.Connection, cfg: Config) -> list[TickerCoverage]:
             for a, b in zip(ok, ok[1:]):
                 if a["value"] and b["value"]:
                     ratio = b["value"] / a["value"]
-                    if ratio > split_ratio or ratio < 1 / split_ratio:
+                    if ratio > 100 or ratio < 1 / 100:
+                        tc.warnings.append(
+                            f"{concept} FY{a['fiscal_year']}->FY{b['fiscal_year']} changed {ratio:,.0f}x "
+                            f"({a['value']:,.0f} -> {b['value']:,.0f}): too large for a split; likely an XBRL "
+                            f"scale error in the filing (thousands tagged as units). Value is wrong as stored."
+                        )
+                    elif ratio > split_ratio or ratio < 1 / split_ratio:
                         tc.warnings.append(
                             f"{concept} FY{a['fiscal_year']}->FY{b['fiscal_year']} changed {ratio:.2f}x "
                             f"({a['value']:,.0f} -> {b['value']:,.0f}): likely stock split not adjusted "

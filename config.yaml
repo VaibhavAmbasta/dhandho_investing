@@ -43,7 +43,10 @@ ingest:
 #     filing for the SAME period. All `required` must be present; absent
 #     `optional` tags are treated as zero (JUDGMENT). With no `required`, at
 #     least one optional must be present.
-# The first strategy that can be satisfied wins, evaluated per filing.
+#   - contained_in: {Component: Container} skips Component when Container is
+#     also reported (Container already includes it).
+# Per filing, the first satisfiable strategy is that filing's value. Across
+# filings, the best-ranked strategy wins, then the latest filing within it.
 # period: duration (flow, ~1 year) or instant (balance sheet at fiscal year end)
 # ---------------------------------------------------------------------------
 concepts:
@@ -113,7 +116,7 @@ concepts:
     unit: USD
     strategies:
       - Goodwill
-    absent_note: "Not reported; company may have no goodwill (left NULL, not zero)."
+    absent_note: "Not separately reported: may be zero, or folded into other assets (AAPL since FY2018). Left NULL, not zero."
 
   intangibles:
     period: instant
@@ -123,27 +126,33 @@ concepts:
       - sum:
           required: []
           optional: [FiniteLivedIntangibleAssetsNet, IndefiniteLivedIntangibleAssetsExcludingGoodwill]
-    absent_note: "Not reported; company may have no acquired intangibles (left NULL, not zero)."
+    absent_note: "Not separately reported: may be zero, or folded into other assets. Left NULL, not zero."
 
   total_debt:
     period: instant
     unit: USD
-    # JUDGMENT: debt = long-term debt (current + non-current) + commercial paper
-    # + other short-term borrowings. Finance leases NOT added separately (often
-    # already inside the debt line; adding risks double counting).
+    # JUDGMENT: debt = long-term debt (current + non-current) + short-term borrowings.
+    # Commercial paper is added only when ShortTermBorrowings is NOT reported, since
+    # the us-gaap ShortTermBorrowings total includes it (KO 2021 double-counted
+    # $2.5B before this rule). Finance leases NOT added separately (often already
+    # inside the debt line; adding risks double counting).
     strategies:
       - sum:
           required: [LongTermDebtNoncurrent]
           optional: [LongTermDebtCurrent, CommercialPaper, ShortTermBorrowings]
+          contained_in: {CommercialPaper: ShortTermBorrowings}
       - sum:
           required: [LongTermDebt]
           optional: [CommercialPaper, ShortTermBorrowings]
+          contained_in: {CommercialPaper: ShortTermBorrowings}
       - sum:
           required: [LongTermDebtAndCapitalLeaseObligations]
           optional: [LongTermDebtAndCapitalLeaseObligationsCurrent, CommercialPaper, ShortTermBorrowings]
+          contained_in: {CommercialPaper: ShortTermBorrowings}
       - sum:
           required: []
           optional: [DebtCurrent, ShortTermBorrowings, CommercialPaper]
+          contained_in: {CommercialPaper: ShortTermBorrowings}
     absent_note: "Not reported; company may be debt-free (left NULL, not zero)."
 
   operating_lease_liabilities:

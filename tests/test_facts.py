@@ -84,11 +84,12 @@ def test_revenue_latest_vintage_tag_switch_and_restatement(result):
     fy18, fy19, fy20, fy21 = (vals[("revenue", y)] for y in (2018, 2019, 2020, 2021))
     assert fy18.latest.value == 1000 and fy18.latest.strategy.label == "SalesRevenueNet"
     assert fy18.n_vintages == 2 and not fy18.restated
-    # FY2019: first filed 1100 under SalesRevenueNet (K19), restated 1150 under ASC 606 tag (K20)
+    # FY2019: 1100 under SalesRevenueNet (rank D, K19) vs 1150 under the ASC 606 tag (rank B, K20).
+    # Better rank wins; the different value under the other tag is kept as a note, not a "restatement".
     assert fy19.latest.value == 1150
     assert fy19.latest.strategy.label == "RevenueFromContractWithCustomerExcludingAssessedTax"
-    assert fy19.first.value == 1100 and fy19.first.strategy.label == "SalesRevenueNet"
-    assert fy19.restated
+    assert not fy19.restated
+    assert any("SalesRevenueNet=1,100" in n for n in fy19.latest.notes)
     assert str(fy19.latest.filed) == "2020-10-30"
     assert fy20.latest.value == 1200 and not fy20.restated and fy20.n_vintages == 2
     # FY2021 amended by 10-K/A
@@ -97,8 +98,18 @@ def test_revenue_latest_vintage_tag_switch_and_restatement(result):
 
 
 def test_quarterly_fact_inside_10k_ignored(result):
+    _, r = result
+    k19 = [v for v in r.vintages if v.concept == "revenue" and v.fiscal_year == 2019 and v.form == "10-K"
+           and v.filed.year == 2019]
+    assert [v.value for v in k19] == [1100]  # not the 300 Q4 figure
+
+
+def test_better_ranked_tag_beats_later_filing(result):
     vals, _ = result
-    assert vals[("revenue", 2019)].first.value == 1100  # not the 300 Q4 figure
+    cash = vals[("cash", 2019)]
+    assert cash.latest.value == 60 and cash.latest.strategy.rank == 1
+    assert str(cash.latest.filed) == "2019-11-01" and not cash.restated
+    assert cash.n_vintages == 2
 
 
 def test_debt_sum_and_partial_components(result):
@@ -108,7 +119,9 @@ def test_debt_sum_and_partial_components(result):
     assert d19.latest.strategy.rank == 1
     assert {c["tag"] for c in d19.latest.components} == {
         "us-gaap:LongTermDebtNoncurrent", "us-gaap:LongTermDebtCurrent", "us-gaap:CommercialPaper"}
-    assert vals[("total_debt", 2020)].latest.value == 950
+    d20 = vals[("total_debt", 2020)]
+    assert d20.latest.value == 950 + 35  # CP 20 is inside ShortTermBorrowings 35: not added again
+    assert "us-gaap:CommercialPaper" not in {c["tag"] for c in d20.latest.components}
     d21 = vals[("total_debt", 2021)]  # only the current portion reported: must NOT be silently 100
     assert d21.status == "missing" and d21.latest is None
     assert "lacks required LongTermDebtNoncurrent" in d21.reason
@@ -118,10 +131,17 @@ def test_debt_sum_and_partial_components(result):
     assert "debt-free" in d18.reason  # absent_note from config
 
 
+def test_contained_in_requires_tags_in_same_sum():
+    with pytest.raises(ValueError, match="contained_in"):
+        parse_concepts({"x": {"period": "instant", "strategies": [
+            {"sum": {"required": ["A"], "optional": ["B"], "contained_in": {"B": "C"}}}]}})
+
+
 def test_operating_leases_not_applicable_pre_asc842(result):
     vals, _ = result
-    assert vals[("operating_lease_liabilities", 2019)].status == "not_applicable"
-    assert "ASC 842" in vals[("operating_lease_liabilities", 2019)].reason
+    l19 = vals[("operating_lease_liabilities", 2019)]
+    assert l19.status == "not_applicable" and l19.latest is None  # the tagged 0 is not a balance
+    assert "ASC 842" in l19.reason and "tagged 0" in l19.reason
     assert vals[("operating_lease_liabilities", 2020)].latest.value == 230
     assert vals[("operating_lease_liabilities", 2020)].latest.strategy.rank == 2
     assert vals[("operating_lease_liabilities", 2021)].status == "missing"

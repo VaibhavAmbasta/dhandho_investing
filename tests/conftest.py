@@ -63,10 +63,17 @@ def build_companyfacts() -> dict:
             inst(E20, 5200, K21), inst(E21, 5500, K21), inst(E21, 5501, K21),  # conflicting duplicate
             inst("2021-03-27", 9999, Q),
         ]},
+        # Balance-sheet cash (rank A) in K19; K20's cash-flow statement repeats the FY2019
+        # opening balance under the restricted-cash tag (rank B). Rank A must win.
+        "CashAndCashEquivalentsAtCarryingValue": {"USD": [inst(E19, 60, K19)]},
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents": {"USD": [inst(E19, 65, K20)]},
         "LongTermDebtNoncurrent": {"USD": [inst(E19, 900, K19), inst(E20, 950, K20)]},
         "LongTermDebtCurrent": {"USD": [inst(E19, 100, K19), inst(E21, 100, K21)]},
-        "CommercialPaper": {"USD": [inst(E19, 50, K19)]},
-        "OperatingLeaseLiabilityNoncurrent": {"USD": [inst(E20, 200, K20)]},
+        "CommercialPaper": {"USD": [inst(E19, 50, K19), inst(E20, 20, K20)]},
+        # FY2020 short-term borrowings (35) already include the 20 of commercial paper.
+        "ShortTermBorrowings": {"USD": [inst(E20, 35, K20)]},
+        # FY2019 comparative tagged 0 before ASC 842 adoption ("—" column): must be N/A, not 0.
+        "OperatingLeaseLiabilityNoncurrent": {"USD": [inst(E19, 0, K20), inst(E20, 200, K20)]},
         "OperatingLeaseLiabilityCurrent": {"USD": [inst(E20, 30, K20)]},
         # 4:1 split during FY2020. K20 restates FY2019 comparatives; FY2018 only exists pre-split.
         "WeightedAverageNumberOfDilutedSharesOutstanding": {"shares": [

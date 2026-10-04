@@ -27,6 +27,9 @@ class Strategy:
     rank: int  # 1-based position in the concept's strategy list
     required: tuple[str, ...]
     optional: tuple[str, ...] = ()
+    # (component, container): skip `component` when `container` is also reported,
+    # because the container already includes it (e.g. CommercialPaper in ShortTermBorrowings).
+    contained_in: tuple[tuple[str, str], ...] = ()
 
     @property
     def is_single(self) -> bool:
@@ -95,7 +98,13 @@ def _parse_strategy(rank: int, item: Any, concept: str) -> Strategy:
         opt = tuple(qualify(t) for t in body.get("optional") or [])
         if not req and not opt:
             raise ConfigError(f"{concept}: empty sum strategy #{rank}")
-        return Strategy(rank=rank, required=req, optional=opt)
+        contained = tuple((qualify(k), qualify(v)) for k, v in (body.get("contained_in") or {}).items())
+        for k, v in contained:
+            if k not in req + opt or v not in req + opt:
+                raise ConfigError(f"{concept}: contained_in {k} -> {v} must name tags in the same sum")
+            if k in req:
+                raise ConfigError(f"{concept}: contained_in component {k} cannot be required")
+        return Strategy(rank=rank, required=req, optional=opt, contained_in=contained)
     raise ConfigError(f"{concept}: strategy #{rank} must be a tag string or {{sum: ...}}, got {item!r}")
 
 

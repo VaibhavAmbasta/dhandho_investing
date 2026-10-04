@@ -188,17 +188,17 @@ def concept_values_df(conn: sqlite3.Connection, tickers: list[str] | None = None
 
 
 def values_as_of(conn: sqlite3.Connection, cik: int, as_of: dt.date | str) -> pd.DataFrame:
-    """Point-in-time view: for each (fiscal_year, concept), the latest value whose
-    filing date is <= as_of. Facts filed after as_of are invisible."""
+    """Point-in-time view: for each (fiscal_year, concept), among filings dated <= as_of,
+    the best-ranked strategy and within it the latest filing (same rule as concept_values).
+    Facts filed after as_of are invisible."""
     as_of = as_of.isoformat() if isinstance(as_of, dt.date) else as_of
     q = """
-    SELECT v.* FROM concept_vintages v
-    JOIN (
-        SELECT fiscal_year, concept, MAX(filed || '|' || accn) AS k
-        FROM concept_vintages WHERE cik = ? AND filed <= ?
-        GROUP BY fiscal_year, concept
-    ) m ON v.fiscal_year = m.fiscal_year AND v.concept = m.concept AND (v.filed || '|' || v.accn) = m.k
-    WHERE v.cik = ?
-    ORDER BY v.concept, v.fiscal_year
+    SELECT * FROM (
+        SELECT v.*, ROW_NUMBER() OVER (
+            PARTITION BY fiscal_year, concept
+            ORDER BY strategy_rank ASC, filed DESC, accn DESC) AS rn
+        FROM concept_vintages v WHERE cik = ? AND filed <= ?
+    ) WHERE rn = 1
+    ORDER BY concept, fiscal_year
     """
-    return pd.read_sql_query(q, conn, params=(cik, as_of, cik))
+    return pd.read_sql_query(q, conn, params=(cik, as_of)).drop(columns="rn")
