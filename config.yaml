@@ -1,0 +1,228 @@
+# dhandho configuration. Every threshold, assumption and tag mapping lives here.
+# Anything marked JUDGMENT is an accounting/data choice you should review
+# (see JUDGMENT_CALLS.md for the reasoning behind each).
+
+sec:
+  user_agent: "dhandho research vaibhavcfc97@gmail.com"
+  # SEC fair-access limit is 10 req/s. We enforce a minimum spacing of 1/N seconds.
+  max_requests_per_second: 8
+  timeout_seconds: 30
+  max_retries: 4            # on 429 / 5xx / connection errors, exponential backoff
+  backoff_base_seconds: 2
+
+paths:
+  cache_dir: data/raw         # raw SEC responses, gzipped, never refetched unless --refresh
+  db_path: data/dhandho.sqlite
+  reports_dir: reports
+  tickers_file: tickers.txt
+
+prices:
+  provider: yfinance          # UNRELIABLE: unofficial scraper. Swap for a paid API later.
+
+ingest:
+  history_years: 15           # keep the most recent N fiscal years per company
+  annual_forms: ["10-K", "10-K/A", "10-KT", "10-KT/A"]
+  # A duration fact counts as "annual" if (end - start) in days falls in this window.
+  # 52/53-week years are 362-371; calendar years 364-365.
+  annual_duration_days: [340, 390]
+  # JUDGMENT: fiscal-year label = calendar year of the period end date, EXCEPT a
+  # 52/53-week year ending in the first N days of January is labelled the prior year.
+  fiscal_year_january_rollback_days: 7
+  # A later filing's value is flagged "restated" if it differs from the first-filed
+  # value by more than this relative amount.
+  restatement_tolerance: 0.005
+  # Year-over-year ratio of share counts outside [1/x, x] is flagged as a possible
+  # unadjusted stock split (XBRL comparatives are only split-adjusted in filings
+  # made after the split).
+  share_split_flag_ratio: 1.6
+
+# ---------------------------------------------------------------------------
+# Concept -> ordered tag strategies.
+#   - A plain string is a single tag (us-gaap unless prefixed, e.g. "dei:Foo").
+#   - {sum: {required: [...], optional: [...]}} adds tags reported in the SAME
+#     filing for the SAME period. All `required` must be present; absent
+#     `optional` tags are treated as zero (JUDGMENT). With no `required`, at
+#     least one optional must be present.
+# The first strategy that can be satisfied wins, evaluated per filing.
+# period: duration (flow, ~1 year) or instant (balance sheet at fiscal year end)
+# ---------------------------------------------------------------------------
+concepts:
+  revenue:
+    period: duration
+    unit: USD
+    strategies:
+      - Revenues
+      - RevenueFromContractWithCustomerExcludingAssessedTax
+      - RevenueFromContractWithCustomerIncludingAssessedTax
+      - SalesRevenueNet
+      - SalesRevenueGoodsNet
+      - SalesRevenueServicesNet
+      - RevenuesNetOfInterestExpense
+    absent_note: "Banks/insurers often have no comparable revenue line."
+
+  operating_income:
+    period: duration
+    unit: USD
+    strategies:
+      - OperatingIncomeLoss
+    # JUDGMENT: no fallback to pre-tax income; mixing them would corrupt margins.
+    absent_note: "Financials often do not report operating income; no pre-tax fallback by design."
+
+  net_income:
+    period: duration
+    unit: USD
+    strategies:
+      - NetIncomeLoss
+      - NetIncomeLossAvailableToCommonStockholdersBasic
+      - ProfitLoss          # JUDGMENT: includes non-controlling interests
+
+  operating_cash_flow:
+    period: duration
+    unit: USD
+    strategies:
+      - NetCashProvidedByUsedInOperatingActivities
+      - NetCashProvidedByUsedInOperatingActivitiesContinuingOperations
+
+  capex:
+    period: duration
+    unit: USD
+    # JUDGMENT: PP&E purchases only. Excludes capitalized software, acquisitions,
+    # and intangibles purchases. Reported as a positive outflow.
+    strategies:
+      - PaymentsToAcquirePropertyPlantAndEquipment
+      - PaymentsToAcquireProductiveAssets
+      - PaymentsForCapitalImprovements
+
+  stock_based_comp:
+    period: duration
+    unit: USD
+    strategies:
+      - ShareBasedCompensation                 # cash-flow add-back (pre-tax)
+      - AllocatedShareBasedCompensationExpense
+    absent_note: "Not reported; company may have no stock compensation."
+
+  diluted_shares:
+    period: duration
+    unit: shares
+    strategies:
+      - WeightedAverageNumberOfDilutedSharesOutstanding
+      - WeightedAverageNumberOfShareOutstandingBasicAndDiluted
+
+  goodwill:
+    period: instant
+    unit: USD
+    strategies:
+      - Goodwill
+    absent_note: "Not reported; company may have no goodwill (left NULL, not zero)."
+
+  intangibles:
+    period: instant
+    unit: USD
+    strategies:
+      - IntangibleAssetsNetExcludingGoodwill
+      - sum:
+          required: []
+          optional: [FiniteLivedIntangibleAssetsNet, IndefiniteLivedIntangibleAssetsExcludingGoodwill]
+    absent_note: "Not reported; company may have no acquired intangibles (left NULL, not zero)."
+
+  total_debt:
+    period: instant
+    unit: USD
+    # JUDGMENT: debt = long-term debt (current + non-current) + commercial paper
+    # + other short-term borrowings. Finance leases NOT added separately (often
+    # already inside the debt line; adding risks double counting).
+    strategies:
+      - sum:
+          required: [LongTermDebtNoncurrent]
+          optional: [LongTermDebtCurrent, CommercialPaper, ShortTermBorrowings]
+      - sum:
+          required: [LongTermDebt]
+          optional: [CommercialPaper, ShortTermBorrowings]
+      - sum:
+          required: [LongTermDebtAndCapitalLeaseObligations]
+          optional: [LongTermDebtAndCapitalLeaseObligationsCurrent, CommercialPaper, ShortTermBorrowings]
+      - sum:
+          required: []
+          optional: [DebtCurrent, ShortTermBorrowings, CommercialPaper]
+    absent_note: "Not reported; company may be debt-free (left NULL, not zero)."
+
+  operating_lease_liabilities:
+    period: instant
+    unit: USD
+    strategies:
+      - OperatingLeaseLiability
+      - sum:
+          required: [OperatingLeaseLiabilityNoncurrent]
+          optional: [OperatingLeaseLiabilityCurrent]
+    # ASC 842 effective for fiscal years beginning after 2018-12-15.
+    not_applicable_before: "2019-12-15"
+    na_reason: "Pre-ASC 842: operating leases were off balance sheet."
+
+  cash:
+    period: instant
+    unit: USD
+    strategies:
+      - CashAndCashEquivalentsAtCarryingValue
+      - CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents  # JUDGMENT: includes restricted cash
+      - Cash
+      - CashAndDueFromBanks
+
+  # EXTRA (not in your list): needed in Phase 2 because net debt using cash alone
+  # massively overstates net debt for cash-rich companies (e.g. AAPL).
+  short_term_investments:
+    period: instant
+    unit: USD
+    strategies:
+      - MarketableSecuritiesCurrent
+      - ShortTermInvestments
+      - AvailableForSaleSecuritiesDebtSecuritiesCurrent
+      - AvailableForSaleSecuritiesCurrent
+    absent_note: "Not reported; company may hold none."
+
+  # EXTRA: long-dated marketable securities. Whether these count as cash in net
+  # debt is a Phase 2 JUDGMENT; collected here so the choice is possible.
+  long_term_investments:
+    period: instant
+    unit: USD
+    strategies:
+      - MarketableSecuritiesNoncurrent
+      - AvailableForSaleSecuritiesDebtSecuritiesNoncurrent
+      - AvailableForSaleSecuritiesNoncurrent
+    absent_note: "Not reported; company may hold none."
+
+  receivables:
+    period: instant
+    unit: USD
+    # JUDGMENT: trade receivables only (Apple's vendor non-trade receivables excluded).
+    strategies:
+      - AccountsReceivableNetCurrent
+      - ReceivablesNetCurrent
+      - AccountsNotesAndLoansReceivableNetCurrent
+      - AccountsReceivableNet
+
+  deferred_revenue:
+    period: instant
+    unit: USD
+    strategies:
+      - sum:
+          required: [ContractWithCustomerLiabilityCurrent]
+          optional: [ContractWithCustomerLiabilityNoncurrent]
+      - ContractWithCustomerLiability
+      - sum:
+          required: [DeferredRevenueCurrent]
+          optional: [DeferredRevenueNoncurrent]
+      - DeferredRevenue
+    absent_note: "Not reported; company may have no material deferred revenue."
+
+  total_assets:
+    period: instant
+    unit: USD
+    strategies:
+      - Assets
+
+  equity:
+    period: instant
+    unit: USD
+    strategies:
+      - StockholdersEquity
+      - StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest  # JUDGMENT: includes NCI

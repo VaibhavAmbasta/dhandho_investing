@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dhandho"
+version = "0.1.0"
+description = "Value-investing screener for US stocks built on SEC EDGAR XBRL data"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31",
+    "pandas>=2.1",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+prices = ["yfinance>=0.2"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+dhandho = "dhandho.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["dhandho*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

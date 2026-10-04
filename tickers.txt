@@ -1,0 +1,13 @@
+# One ticker per line. '#' starts a comment.
+# BRK-B, MKL (insurers) and JPM (bank) are included deliberately: generic
+# industrial tag mappings break on financials, and the coverage report should show it.
+AAPL
+MSFT
+KO
+BRK-B
+COST
+MKL
+AZO
+ORLY
+CPRT
+JPM
