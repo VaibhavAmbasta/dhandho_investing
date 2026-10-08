@@ -97,3 +97,76 @@ def test_financials_excluded_by_sic():
     assert "financials" in _excluded(_Cfg, 6021)
     assert _excluded(_Cfg, 3571) is None
     assert _excluded(_Cfg, None) is None
+
+
+# ---- normalization, upkeep capex, earning power -------------------------------------------
+from dhandho.valuation import cash_year, hist_cagr_normalized, normalized_from_margins  # noqa: E402
+
+
+def test_normalized_from_margins_median_times_latest_revenue():
+    fcf = {2021: 20.0, 2022: 5.0, 2023: 30.0, 2024: 24.0, 2025: 6.0}      # two one-off bad years
+    rev = {2021: 100.0, 2022: 100.0, 2023: 150.0, 2024: 120.0, 2025: 200.0}
+    # margins 20%, 5%, 20%, 20%, 3% -> median 20% -> x latest revenue 200 = 40
+    v, m, why = normalized_from_margins(fcf, rev, 2025, 5, 3)
+    assert m == pytest.approx(0.20) and v == pytest.approx(40.0) and why is None
+
+
+def test_normalized_needs_min_years_and_revenue():
+    v, _, why = normalized_from_margins({2025: 10.0, 2024: 9.0}, {2025: 100.0, 2024: 90.0}, 2025, 5, 3)
+    assert v is None and "only 2 of 5" in why
+    v, _, why = normalized_from_margins({2025: 10.0}, {2025: None}, 2025, 5, 1)
+    assert v is None and "no positive revenue" in why
+
+
+def test_hist_cagr_normalized_constant_margin():
+    rev = {y: 100 * 1.08 ** (y - 2010) for y in range(2010, 2026)}
+    fcf = {y: 0.2 * v for y, v in rev.items()}
+    fcf[2024] = 1.0  # a one-off year inside the end window: the median ignores it
+    g, span, why = hist_cagr_normalized(fcf, rev, 2025, 10, 5, 5, 3)
+    assert span == 10 and g == pytest.approx(0.08) and why is None
+
+
+class FakeFacts:
+    def __init__(self, vals):
+        self.vals = vals
+        self.ever_ok = {c for (c, _), v in vals.items() if v is not None}
+
+    def value(self, concept, fy):
+        v = self.vals.get((concept, fy))
+        return (v, None, {"concept": concept}) if v is not None else (None, f"{concept} missing", None)
+
+
+RD = {"capex": {"include_finance_lease_additions": True}}
+
+
+def test_cash_year_finance_leases_and_depreciation():
+    f = FakeFacts({("operating_cash_flow", 1): 180.0, ("capex", 1): 115.0, ("stock_based_comp", 1): 12.0,
+                   ("finance_lease_additions", 1): 25.0, ("depreciation", 1): 34.0,
+                   ("finance_lease_amortization", 1): 5.0})
+    cy = cash_year(f, 1, RD)
+    assert cy.capex_total == 140.0                  # 115 capex + 25 finance-lease assets
+    assert cy.fcf == pytest.approx(180 - 140 - 12)  # 28
+    assert cy.maintenance_capex == 39.0             # depreciation 34 + lease amortization 5
+    assert cy.owner_earnings == pytest.approx(180 - 39 - 12)
+
+
+def test_cash_year_da_minus_amortization_and_cap_at_capex():
+    f = FakeFacts({("operating_cash_flow", 1): 100.0, ("capex", 1): 10.0, ("stock_based_comp", 1): 0.0,
+                   ("depreciation_amortization", 1): 30.0, ("amortization_intangibles", 1): 8.0})
+    cy = cash_year(f, 1, RD)
+    assert cy.maintenance_capex == 10.0             # D&A 30 - amortization 8 = 22, capped at total capex 10
+    assert cy.owner_earnings == cy.fcf == 90.0
+
+
+def test_cash_year_da_without_amortization_is_stated():
+    f = FakeFacts({("operating_cash_flow", 1): 100.0, ("capex", 1): 40.0, ("stock_based_comp", 1): 5.0,
+                   ("depreciation_amortization", 1): 30.0})
+    cy = cash_year(f, 1, RD)
+    assert cy.maintenance_capex == 30.0 and cy.owner_earnings == 65.0
+    assert any("only total D&A" in a for a, _ in cy.assumptions)
+
+
+def test_cash_year_no_depreciation_gives_reason():
+    f = FakeFacts({("operating_cash_flow", 1): 100.0, ("capex", 1): 40.0, ("stock_based_comp", 1): 5.0})
+    cy = cash_year(f, 1, RD)
+    assert cy.fcf == 55.0 and cy.owner_earnings is None and "depreciation" in cy.oe_reason

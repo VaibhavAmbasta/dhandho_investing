@@ -97,41 +97,58 @@ def test_reverse_dcf_end_to_end(project, capsys):
     r = conn.execute("SELECT * FROM reverse_dcf WHERE ticker = 'TESTCO'").fetchone()
     # FY2021 owner FCF = OCF 290 - capex 50 - SBC (never reported -> 0, stated as an assumption)
     assert r["base_fcf"] == 240
-    assert "SBC FY2021 never reported" in r["assumptions"]
+    assert "SBC never reported by this company; treated as 0 (FY2019-FY2021, 3 yr)" in r["assumptions"]
     # net debt: debt / leases / cash missing for FY2021 -> each 0, each stated;
     # held-to-maturity 100 counts as cash because no other securities line exists
     assert r["net_debt"] == -100 and "total_debt FY2021 treated as 0" in r["assumptions"]
     # market cap = csv price 10 x cover-page shares 395
     assert r["price"] == 10 and r["shares_outstanding"] == 395 and r["market_cap"] == 3950
     assert r["price_date"] == "2022-03-01" and r["price_reliable"] == 0
-    # dilution needs FY2016 shares, which don't exist -> NULL with reason, so implied_growth is NULL
+    # dilution is not modelled by default; its rate is still reported (NULL here: no FY2016 shares)
     reasons = json.loads(r["reasons"])
     assert r["dilution_rate"] is None and "FY2016" in reasons["dilution_rate"]
-    assert r["implied_growth"] is None and "FY2016" in reasons["implied_growth"]
-    # ...but the no-dilution solve still works and round-trips
-    g = r["implied_growth_no_dilution"]
+    g = r["implied_growth"]
+    assert g is not None and g == pytest.approx(r["implied_growth_no_dilution"])
     assert r["ev"] == 3850
+    # normalized base: median owner-FCF margin FY2019-21 (210/1150, 225/1200, 240/1310) = 240/1310 -> x 1310
+    assert r["base_fcf"] == pytest.approx(240) and r["base_fcf_mode"] == "normalized"
     assert enterprise_value_implied(240, g, 0.10, 15, 10) == pytest.approx(3850, rel=1e-6)
-    # sensitivity grid: 4 discount rates x 5 multiples, all NULL here with the dilution reason
+    # earning power: owner earnings after upkeep capex = OCF - depreciation (capped at capex) - SBC
+    #   FY2019 250-25=225, FY2020 270-28=242, FY2021 290-30=260; median margin = 260/1310 -> 260
+    assert r["maintenance_capex"] == 30 and r["capex_total"] == 50
+    assert r["owner_earnings_normalized"] == pytest.approx(260)
+    assert r["epv"] == pytest.approx(2600)                                  # 260 / 10%
+    assert r["growth_premium"] == pytest.approx(1 - 2600 / 3850)
+    assert r["price_at_zero_growth"] == pytest.approx((2600 + 100) / 395)   # minus net debt of -100
     rows = conn.execute("SELECT * FROM reverse_dcf_sensitivity WHERE ticker = 'TESTCO'").fetchall()
-    assert len(rows) == 20 and all(x["implied_growth"] is None and x["reason"] for x in rows)
+    assert len(rows) == 20 and all(x["implied_growth"] is not None for x in rows)
     # price is cached for reproducibility
     assert conn.execute("SELECT price FROM prices WHERE ticker='TESTCO'").fetchone()[0] == 10
 
 
-def test_reverse_dcf_without_dilution_model(project, capsys):
+def test_reverse_dcf_with_dilution_model(project, capsys):
     (project / "prices.csv").write_text("ticker,date,close,source\nTESTCO,2022-03-01,10,test\n")
     cfg_text = (project / "config.yaml").read_text().replace("providers: [csv, yfinance]", "providers: [csv]")
-    (project / "config.yaml").write_text(cfg_text.replace("model_dilution: true", "model_dilution: false"))
+    (project / "config.yaml").write_text(cfg_text.replace("model_dilution: false", "model_dilution: true"))
     assert run(project, "ingest") == 0
     assert run(project, "dcf", "--date", "2022-03-04") == 0
     conn = sqlite3.connect(project / "data" / "dhandho.sqlite")
-    ig, ind = conn.execute(
-        "SELECT implied_growth, implied_growth_no_dilution FROM reverse_dcf WHERE ticker='TESTCO'").fetchone()
-    assert ig is not None and ig == pytest.approx(ind)
-    n = conn.execute("SELECT COUNT(*) FROM reverse_dcf_sensitivity WHERE implied_growth IS NOT NULL").fetchone()[0]
-    assert n == 20
-    # higher discount rate -> the same price implies more growth
+    conn.row_factory = sqlite3.Row
+    r = conn.execute("SELECT * FROM reverse_dcf WHERE ticker='TESTCO'").fetchone()
+    # dilution needs FY2016 shares, which don't exist -> implied_growth NULL with that reason
+    assert r["implied_growth"] is None and "FY2016" in json.loads(r["reasons"])["implied_growth"]
+    assert r["implied_growth_no_dilution"] is not None
+    rows = conn.execute("SELECT * FROM reverse_dcf_sensitivity").fetchall()
+    assert len(rows) == 20 and all(x["implied_growth"] is None and x["reason"] for x in rows)
+
+
+def test_higher_discount_rate_needs_more_growth(project):
+    (project / "prices.csv").write_text("ticker,date,close,source\nTESTCO,2022-03-01,10,test\n")
+    cfg_text = (project / "config.yaml").read_text().replace("providers: [csv, yfinance]", "providers: [csv]")
+    (project / "config.yaml").write_text(cfg_text)
+    assert run(project, "ingest") == 0
+    assert run(project, "dcf", "--date", "2022-03-04") == 0
+    conn = sqlite3.connect(project / "data" / "dhandho.sqlite")
     g8, g11 = (conn.execute("SELECT implied_growth FROM reverse_dcf_sensitivity WHERE discount_rate=? AND "
                             "terminal_multiple=15", (dr,)).fetchone()[0] for dr in (0.08, 0.11))
     assert g11 > g8

@@ -84,6 +84,8 @@ def build_companyfacts() -> dict:
         ]},
         "NetCashProvidedByUsedInOperatingActivities": {"USD": [
             dur(FY19, 250, K19), dur(FY20, 270, K20), dur(FY21, 290, K21)]},
+        # PP&E depreciation (upkeep-capex proxy) for FY2019-2021
+        "Depreciation": {"USD": [dur(FY19, 25, K19), dur(FY20, 28, K20), dur(FY21, 30, K21)]},
         "PaymentsToAcquirePropertyPlantAndEquipment": {"USD": [
             dur(FY19, 40, K19), dur(FY20, 45, K20), dur(FY21, 50, K21)]},
     }

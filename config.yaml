@@ -41,17 +41,36 @@ reverse_dcf:
   sensitivity:
     discount_rates: [0.08, 0.09, 0.10, 0.11]
     terminal_multiples: [10, 12.5, 15, 17.5, 20]
-  # JUDGMENT: base owner FCF = latest fiscal year ("latest") or the mean of the
-  # last 3 ("avg3"). latest punishes temporary capex spikes; avg3 understates a
-  # fast grower's base.
-  base_fcf: latest
+  # JUDGMENT: starting owner FCF for the projection.
+  #   latest     = last fiscal year as reported (one-offs distort it: KO FY2024-25)
+  #   avg3       = mean of last 3 years (still distorted if 2 of 3 are one-offs;
+  #                understates a fast grower)
+  #   normalized = median owner-FCF margin over `normalization.margin_years`
+  #                x latest revenue. Robust to one-off years, keeps current scale.
+  #                Overstates if margins are in structural decline.
+  # All three are reported; this picks the one the solver uses.
+  base_fcf: normalized
+  normalization:
+    margin_years: 5
+    min_years: 3                # fewer valid years -> NULL + reason
+  capex:
+    # Assets taken on through finance leases are purchases paid in instalments,
+    # invisible in the capex line (MSFT FY2026: $24.6B). Add them to capex.
+    include_finance_lease_additions: true
+  # Upkeep ("maintenance") capex = min(total capex, PP&E depreciation [+ finance-
+  # lease asset amortization]). Used ONLY for earning power value (no-growth
+  # value), never in the growth solve: growth must be paid for with growth capex.
+  earning_power:
+    enabled: true
   # Historical net dilution rate = CAGR of split-adjusted diluted shares over
   # this many years. Shorter = reflects current buyback/SBC policy.
   dilution_lookback_years: 5
   # Model the share count explicitly (per-share value). See JUDGMENT_CALLS #24:
   # with SBC already deducted from owner FCF this double counts SBC dilution and
   # double credits buybacks. implied_growth_no_dilution is reported alongside.
-  model_dilution: true
+  # Off by default: SBC is already deducted from owner FCF, and buybacks are paid
+  # from it, so modelling share-count change on top double counts both.
+  model_dilution: false
   # Solver bounds for implied growth. Outside them the result is NULL + reason.
   growth_bounds: [-0.50, 1.00]
   net_debt:
@@ -68,7 +87,12 @@ reverse_dcf:
     # JUDGMENT: CAGR endpoints are N-year trailing means (3 = mean of years
     # t-2..t at each end). 1 = point-to-point. Owner FCF is too lumpy for a
     # single-year endpoint.
-    endpoint_smoothing_years: 3
+    endpoint_smoothing_years: 3   # used for revenue, and for owner FCF if fcf_endpoints: mean
+    # JUDGMENT: owner-FCF CAGR endpoints. "normalized" = median margin of the 5
+    # years ending at each endpoint x that year's revenue: the same method as the
+    # starting FCF, so history and base are like for like and one-off years
+    # (KO FY2024-25) can't fake a decline. "mean" = 3-year trailing means.
+    fcf_endpoints: normalized
     min_cagr_years: 5           # use a shorter span (and say so) if 10y is unavailable
 
 ingest:
@@ -294,6 +318,41 @@ concepts:
           optional: [DeferredRevenueNoncurrent]
       - DeferredRevenue
     absent_note: "Not reported; company may have no material deferred revenue."
+
+  # Depreciation of PP&E only (not amortization of acquired intangibles): the
+  # proxy for upkeep capex. If only D&A is reported, intangible amortization is
+  # subtracted when tagged (see valuation.maintenance_capex).
+  depreciation:
+    period: duration
+    unit: USD
+    strategies:
+      - Depreciation
+      - DepreciationNonproduction
+  depreciation_amortization:
+    period: duration
+    unit: USD
+    strategies:
+      - DepreciationDepletionAndAmortization
+      - DepreciationAmortizationAndAccretionNet
+      - DepreciationAndAmortization
+  amortization_intangibles:
+    period: duration
+    unit: USD
+    strategies:
+      - AmortizationOfIntangibleAssets
+    absent_note: "Not reported; company may have no acquired intangibles."
+  finance_lease_additions:
+    period: duration
+    unit: USD
+    strategies:
+      - RightOfUseAssetObtainedInExchangeForFinanceLeaseLiability
+    absent_note: "Not reported; company may have no finance leases."
+  finance_lease_amortization:
+    period: duration
+    unit: USD
+    strategies:
+      - FinanceLeaseRightOfUseAssetAmortization
+    absent_note: "Not reported; company may have no finance leases."
 
   total_assets:
     period: instant

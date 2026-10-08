@@ -56,21 +56,86 @@ class _Facts:
         return r["value"], None, prov
 
 
-def owner_fcf(facts: _Facts, fy: int) -> tuple[float | None, str | None, list[dict], list[str]]:
-    """OCF - capex - SBC. Returns (value, reason, provenance, assumptions)."""
+@dataclass
+class CashYear:
+    """One fiscal year's cash economics. Every None has a reason."""
+
+    fcf: float | None                  # owner FCF: OCF - total capex - SBC
+    fcf_reason: str | None
+    owner_earnings: float | None       # OCF - upkeep capex - SBC (no-growth cash generation)
+    oe_reason: str | None
+    capex_total: float | None = None
+    maintenance_capex: float | None = None
+    provenance: list[dict] = field(default_factory=list)
+    assumptions: list[tuple[str, int]] = field(default_factory=list)  # (text, fiscal year)
+
+
+def cash_year(facts: _Facts, fy: int, rd: dict) -> CashYear:
     ocf, r1, p1 = facts.value("operating_cash_flow", fy)
     capex, r2, p2 = facts.value("capex", fy)
     sbc, r3, p3 = facts.value("stock_based_comp", fy)
-    assumptions: list[str] = []
+    assumptions: list[tuple[str, int]] = []
     if ocf is None or capex is None:
-        return None, "; ".join(r for r in (r1, r2) if r), [], []
+        why = "; ".join(r for r in (r1, r2) if r)
+        return CashYear(None, why, None, why)
     if sbc is None:
         if "stock_based_comp" in facts.ever_ok:
-            return None, f"SBC missing this year but reported in others ({r3})", [], []
+            why = f"SBC missing this year but reported in others ({r3})"
+            return CashYear(None, why, None, why)
         sbc = 0.0
-        assumptions.append(f"SBC FY{fy} never reported by this company; treated as 0")
+        assumptions.append(("SBC never reported by this company; treated as 0", fy))
     prov = [p for p in (p1, p2, p3) if p]
-    return ocf - capex - sbc, None, prov, assumptions
+
+    capex_total = capex
+    include_fl = rd.get("capex", {}).get("include_finance_lease_additions", True)
+    if include_fl:
+        fl, _, pf = facts.value("finance_lease_additions", fy)
+        if fl is None:
+            if "finance_lease_additions" in facts.ever_ok:
+                assumptions.append(("finance-lease asset additions missing; treated as 0", fy))
+            fl = 0.0
+        elif pf:
+            prov.append(pf)
+        capex_total += fl
+    fcf = ocf - capex_total - sbc
+
+    # Upkeep capex proxy: PP&E depreciation (+ finance-lease asset amortization), capped at total capex.
+    dep, _, pd = facts.value("depreciation", fy)
+    if dep is None:
+        da, _, pda = facts.value("depreciation_amortization", fy)
+        if da is not None:
+            am, _, pam = facts.value("amortization_intangibles", fy)
+            if am is None:
+                assumptions.append(("only total D&A reported; used as depreciation (includes any intangible "
+                                    "amortization, so upkeep capex may be overstated)", fy))
+                am = 0.0
+            dep, pd = da - am, pda
+    if dep is None:
+        return CashYear(fcf, None, None, "no depreciation or D&A reported", capex_total, None, prov, assumptions)
+    if pd:
+        prov.append(pd)
+    if include_fl:
+        fla, _, pfa = facts.value("finance_lease_amortization", fy)
+        dep += fla or 0.0
+    maintenance = min(capex_total, dep)
+    return CashYear(fcf, None, ocf - maintenance - sbc, None, capex_total, maintenance, prov, assumptions)
+
+
+def normalized_from_margins(series: dict[int, float | None], revenue: dict[int, float | None], last_fy: int,
+                            years: int, min_years: int) -> tuple[float | None, float | None, str | None]:
+    """Median of (value / revenue) over the last `years` fiscal years x latest revenue.
+    Returns (normalized value, median margin, reason)."""
+    import statistics
+
+    rev_last = revenue.get(last_fy)
+    if not rev_last or rev_last <= 0:
+        return None, None, f"no positive revenue for FY{last_fy}"
+    margins = [series[y] / revenue[y] for y in range(last_fy - years + 1, last_fy + 1)
+               if series.get(y) is not None and revenue.get(y) and revenue[y] > 0]
+    if len(margins) < min_years:
+        return None, None, f"only {len(margins)} of {years} years have both the value and revenue (need {min_years})"
+    m = statistics.median(margins)
+    return m * rev_last, m, None
 
 
 def hist_cagr(series: dict[int, float | None], last_fy: int, span: int, smooth: int, min_span: int
@@ -87,6 +152,28 @@ def hist_cagr(series: dict[int, float | None], last_fy: int, span: int, smooth: 
             continue
         end = sum(series[y] for y in end_years) / smooth
         start = sum(series[y] for y in start_years) / smooth
+        try:
+            return cagr(start, end, s), s, None
+        except ValueError as exc:
+            return None, s, str(exc)
+    return None, None, last_reason
+
+
+def hist_cagr_normalized(fcf: dict[int, float | None], revenue: dict[int, float | None], last_fy: int,
+                         span: int, min_span: int, margin_years: int, min_years: int
+                         ) -> tuple[float | None, int | None, str | None]:
+    """CAGR between margin-normalized owner FCF at last_fy and at last_fy - span (each = median
+    margin of the trailing `margin_years` x that year's revenue). The same normalization as the
+    starting FCF, so history and base are compared like for like."""
+    end, _, why = normalized_from_margins(fcf, revenue, last_fy, margin_years, min_years)
+    if end is None:
+        return None, None, f"end: {why}"
+    last_reason = None
+    for s in range(span, min_span - 1, -1):
+        start, _, why = normalized_from_margins(fcf, revenue, last_fy - s, margin_years, min_years)
+        if start is None:
+            last_reason = f"start FY{last_fy - s}: {why}"
+            continue
         try:
             return cagr(start, end, s), s, None
         except ValueError as exc:
@@ -142,25 +229,46 @@ def value_ticker(conn: sqlite3.Connection, cfg: Config, ticker: str, provider: P
     res.values.update({"fiscal_year": last_fy, "fy_end": period_end})
 
     # ---- owner FCF history and base ----------------------------------------
-    first_fy = last_fy - rd["history"]["cagr_years"] - rd["history"]["endpoint_smoothing_years"] - 1
+    norm = rd.get("normalization", {"margin_years": 5, "min_years": 3})
+    lookback = max(rd["history"]["endpoint_smoothing_years"], norm["margin_years"])
+    first_fy = last_fy - rd["history"]["cagr_years"] - lookback - 1
     fcf_series: dict[int, float | None] = {}
+    oe_series: dict[int, float | None] = {}
     rev_series: dict[int, float | None] = {}
+    grouped: dict[str, list[int]] = {}
+    years: dict[int, CashYear] = {}
     for fy in range(first_fy, last_fy + 1):
-        v, _, prov, assum = owner_fcf(facts, fy)
-        fcf_series[fy] = v
-        res.assumptions.extend(assum)
-        if fy == last_fy:
-            res.inputs["owner_fcf_latest"] = prov
+        cy = cash_year(facts, fy, rd)
+        years[fy] = cy
+        fcf_series[fy], oe_series[fy] = cy.fcf, cy.owner_earnings
         rev_series[fy] = facts.value("revenue", fy)[0]
+        for text, y in cy.assumptions:
+            grouped.setdefault(text, []).append(y)
+    for text, ys in grouped.items():
+        span = f"FY{min(ys)}" if len(ys) == 1 else f"FY{min(ys)}-FY{max(ys)}"
+        res.assumptions.append(f"{text} ({span}, {len(ys)} yr)")
+    latest = years[last_fy]
+    res.inputs["owner_fcf_latest"] = latest.provenance
+    res.set("capex_total", latest.capex_total, latest.fcf_reason)
+    res.set("maintenance_capex", latest.maintenance_capex, latest.oe_reason)
 
-    if rd["base_fcf"] == "avg3":
-        vals = [fcf_series.get(last_fy - i) for i in range(3)]
-        base = sum(vals) / 3 if all(v is not None for v in vals) else None
-        res.set("base_fcf", base, "owner FCF missing in one of the last 3 years")
+    res.set("base_fcf_latest", latest.fcf, latest.fcf_reason)
+    last3 = [fcf_series.get(last_fy - i) for i in range(3)]
+    res.set("base_fcf_avg3", sum(last3) / 3 if all(v is not None for v in last3) else None,
+            "owner FCF missing in one of the last 3 years")
+    v, m, why = normalized_from_margins(fcf_series, rev_series, last_fy, norm["margin_years"], norm["min_years"])
+    res.set("base_fcf_normalized", v, why)
+    res.set("fcf_margin_median", m, why)
+    mode = rd["base_fcf"]
+    key = {"latest": "base_fcf_latest", "avg3": "base_fcf_avg3", "normalized": "base_fcf_normalized"}[mode]
+    res.set("base_fcf", res.values.get(key), res.reasons.get(key))
+    res.values["base_fcf_mode"] = mode
+
+    if rd.get("earning_power", {}).get("enabled", True):
+        v, m, why = normalized_from_margins(oe_series, rev_series, last_fy, norm["margin_years"], norm["min_years"])
+        res.set("owner_earnings_normalized", v, why or latest.oe_reason)
     else:
-        v, reason, _, _ = owner_fcf(facts, last_fy)
-        res.set("base_fcf", v, reason)
-    res.values["base_fcf_mode"] = rd["base_fcf"]
+        res.set("owner_earnings_normalized", None, "earning power disabled in config")
 
     # ---- net debt -----------------------------------------------------------
     nd_cfg = rd["net_debt"]
@@ -254,8 +362,16 @@ def value_ticker(conn: sqlite3.Connection, cfg: Config, ticker: str, provider: P
     res.set("hist_revenue_cagr", g, reason)
     res.values["hist_revenue_span"] = span
     g, span, reason = hist_cagr(fcf_series, last_fy, h["cagr_years"], h["endpoint_smoothing_years"], h["min_cagr_years"])
-    res.set("hist_fcf_cagr", g, reason)
-    res.values["hist_fcf_span"] = span
+    res.set("hist_fcf_cagr_mean", g, reason)
+    g2, span2, reason2 = hist_cagr_normalized(fcf_series, rev_series, last_fy, h["cagr_years"], h["min_cagr_years"],
+                                              norm["margin_years"], norm["min_years"])
+    res.set("hist_fcf_cagr_normalized", g2, reason2)
+    if h.get("fcf_endpoints", "normalized") == "normalized":
+        res.set("hist_fcf_cagr", g2, reason2)
+        res.values["hist_fcf_span"] = span2
+    else:
+        res.set("hist_fcf_cagr", g, reason)
+        res.values["hist_fcf_span"] = span
     res.inputs["owner_fcf_series"] = {str(k): v for k, v in fcf_series.items()}
 
     # ---- implied growth -------------------------------------------------------
@@ -297,6 +413,19 @@ def value_ticker(conn: sqlite3.Connection, cfg: Config, ticker: str, provider: P
         pv = enterprise_value_implied(base, hg, rd["discount_rate"], rd["terminal_multiple"], years, dil)
         res.set("price_at_hist_growth", (pv - net_debt) / shares_out)
 
+    # Earning power value: what the business is worth if it never grows, i.e. owner
+    # earnings after upkeep capex only, capitalised at the discount rate.
+    oe = res.values.get("owner_earnings_normalized")
+    if oe is None:
+        for k in ("epv", "growth_premium", "price_at_zero_growth"):
+            res.set(k, None, f"needs normalized owner earnings ({res.reasons.get('owner_earnings_normalized')})")
+    else:
+        epv = oe / rd["discount_rate"]
+        res.set("epv", epv)
+        res.set("growth_premium", 1 - epv / ev if ev and ev > 0 else None, "needs a positive EV")
+        res.set("price_at_zero_growth", (epv - net_debt) / shares_out if shares_out else None,
+                "needs shares outstanding")
+
     for key, hist in (("gap_vs_fcf", "hist_fcf_cagr"), ("gap_vs_revenue", "hist_revenue_cagr")):
         a, b = res.values.get("implied_growth"), res.values.get(hist)
         res.set(key, a - b if a is not None and b is not None else None,
@@ -312,6 +441,9 @@ CREATE TABLE IF NOT EXISTS reverse_dcf (
     dilution_rate REAL, implied_growth REAL, implied_growth_no_dilution REAL,
     hist_revenue_cagr REAL, hist_revenue_span INTEGER, hist_fcf_cagr REAL, hist_fcf_span INTEGER,
     gap_vs_fcf REAL, gap_vs_revenue REAL, price_at_hist_growth REAL,
+    base_fcf_latest REAL, base_fcf_avg3 REAL, base_fcf_normalized REAL, fcf_margin_median REAL,
+    capex_total REAL, maintenance_capex REAL, owner_earnings_normalized REAL, epv REAL,
+    growth_premium REAL, price_at_zero_growth REAL, hist_fcf_cagr_mean REAL, hist_fcf_cagr_normalized REAL,
     reasons TEXT, inputs TEXT, assumptions TEXT, warnings TEXT
 );
 CREATE TABLE IF NOT EXISTS reverse_dcf_sensitivity (
@@ -323,7 +455,10 @@ CREATE TABLE IF NOT EXISTS reverse_dcf_sensitivity (
 COLUMNS = ["name", "sic", "fiscal_year", "fy_end", "price", "price_date", "price_source", "price_reliable",
            "shares_outstanding", "market_cap", "net_debt", "ev", "base_fcf", "base_fcf_mode", "dilution_rate",
            "implied_growth", "implied_growth_no_dilution", "hist_revenue_cagr", "hist_revenue_span",
-           "hist_fcf_cagr", "hist_fcf_span", "gap_vs_fcf", "gap_vs_revenue", "price_at_hist_growth"]
+           "hist_fcf_cagr", "hist_fcf_span", "gap_vs_fcf", "gap_vs_revenue", "price_at_hist_growth",
+           "base_fcf_latest", "base_fcf_avg3", "base_fcf_normalized", "fcf_margin_median", "capex_total",
+           "maintenance_capex", "owner_earnings_normalized", "epv", "growth_premium", "price_at_zero_growth",
+           "hist_fcf_cagr_mean", "hist_fcf_cagr_normalized"]
 
 
 def store(conn: sqlite3.Connection, results: list[Result]) -> None:

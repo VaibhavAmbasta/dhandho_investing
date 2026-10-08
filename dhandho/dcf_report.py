@@ -55,11 +55,13 @@ def render_text(results: list[Result], cfg) -> str:
              f"owner FCF, {rd['years']} years, base FCF = {rd['base_fcf']}, "
              f"dilution {'modelled' if rd.get('model_dilution', True) else 'not modelled'}.")
     L.append("Gap = implied growth - historical 10y owner-FCF CAGR. Negative = price asks for less growth than delivered.")
-    L.append("px@hist = share price at which implied growth would equal the historical owner-FCF CAGR (needs no quote).")
+    L.append("px@hist = share price if growth equalled the historical owner-FCF CAGR. "
+             "px@0g = earning power value per share: worth if it never grows (upkeep capex only).")
+    L.append("growth prem = share of today's price that is a bet on growth (1 - earning power value / EV).")
     L.append("")
-    hdr = (f"{'#':>2} {'ticker':<6} {'FY':>4} {'mcap':>9} {'net debt':>9} {'base FCF':>9} {'dilut.':>7} "
-           f"{'implied':>8} {'impl.nodil':>10} {'rev CAGR':>8} {'FCF CAGR':>8} {'gap FCF':>8} {'gap rev':>8} "
-           f"{'price':>8} {'px@hist':>8}")
+    hdr = (f"{'#':>2} {'ticker':<6} {'FY':>4} {'mcap':>9} {'net debt':>9} {'base FCF':>9} {'implied':>8} "
+           f"{'rev CAGR':>8} {'FCF CAGR':>8} {'gap FCF':>8} {'price':>9} {'px@hist':>9} {'px@0g':>9} "
+           f"{'growth prem':>11}")
     L.append(hdr)
     L.append("-" * len(hdr))
     for i, r in enumerate(rank(results), 1):
@@ -67,12 +69,28 @@ def render_text(results: list[Result], cfg) -> str:
         if r.status != "ok":
             L.append(f"{'':>2} {r.ticker:<6} EXCLUDED: {r.reasons.get('status')}")
             continue
+        gp = v.get("growth_premium")
         L.append(f"{i:>2} {r.ticker:<6} {v.get('fiscal_year') or '':>4} {_b(v.get('market_cap')):>9} "
-                 f"{_b(v.get('net_debt')):>9} {_b(v.get('base_fcf')):>9} {_pct(v.get('dilution_rate')):>7} "
-                 f"{_pct(v.get('implied_growth')):>8} {_pct(v.get('implied_growth_no_dilution')):>10} "
+                 f"{_b(v.get('net_debt')):>9} {_b(v.get('base_fcf')):>9} {_pct(v.get('implied_growth')):>8} "
                  f"{_pct(v.get('hist_revenue_cagr')):>8} {_pct(v.get('hist_fcf_cagr')):>8} "
-                 f"{_pct(v.get('gap_vs_fcf')):>8} {_pct(v.get('gap_vs_revenue')):>8} "
-                 f"{_px(v.get('price')):>8} {_px(v.get('price_at_hist_growth')):>8}")
+                 f"{_pct(v.get('gap_vs_fcf')):>8} {_px(v.get('price')):>9} "
+                 f"{_px(v.get('price_at_hist_growth')):>9} {_px(v.get('price_at_zero_growth')):>9} "
+                 f"{'NULL' if gp is None else f'{gp:.0%}':>11}")
+    L.append("")
+    L.append("Starting owner FCF under each method (the solver uses the one in config), and upkeep vs total capex:")
+    hdr2 = (f"   {'ticker':<6} {'latest':>9} {'avg3':>9} {'normalized':>10} {'med margin':>10} "
+            f"{'total capex':>11} {'upkeep capex':>12} {'owner earn.':>11} {'FCF CAGR mean':>13} {'FCF CAGR norm':>13}")
+    L.append(hdr2)
+    for r in rank(results):
+        if r.status != "ok":
+            continue
+        v = r.values
+        m = v.get("fcf_margin_median")
+        L.append(f"   {r.ticker:<6} {_b(v.get('base_fcf_latest')):>9} {_b(v.get('base_fcf_avg3')):>9} "
+                 f"{_b(v.get('base_fcf_normalized')):>10} {'NULL' if m is None else f'{m:.1%}':>10} "
+                 f"{_b(v.get('capex_total')):>11} {_b(v.get('maintenance_capex')):>12} "
+                 f"{_b(v.get('owner_earnings_normalized')):>11} {_pct(v.get('hist_fcf_cagr_mean')):>13} "
+                 f"{_pct(v.get('hist_fcf_cagr_normalized')):>13}")
     for r in rank(results):
         if r.status != "ok":
             continue
