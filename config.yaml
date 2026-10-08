@@ -346,6 +346,7 @@ concepts:
     unit: USD
     strategies:
       - RightOfUseAssetObtainedInExchangeForFinanceLeaseLiability
+      - CapitalLeaseObligationsIncurred     # pre-ASC 842 name for the same thing
     absent_note: "Not reported; company may have no finance leases."
   finance_lease_amortization:
     period: duration
