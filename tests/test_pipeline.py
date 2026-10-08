@@ -98,8 +98,9 @@ def test_reverse_dcf_end_to_end(project, capsys):
     # FY2021 owner FCF = OCF 290 - capex 50 - SBC (never reported -> 0, stated as an assumption)
     assert r["base_fcf"] == 240
     assert "SBC FY2021 never reported" in r["assumptions"]
-    # net debt: debt / leases / cash all missing for FY2021 -> each 0, each stated
-    assert r["net_debt"] == 0 and "total_debt FY2021 treated as 0" in r["assumptions"]
+    # net debt: debt / leases / cash missing for FY2021 -> each 0, each stated;
+    # held-to-maturity 100 counts as cash because no other securities line exists
+    assert r["net_debt"] == -100 and "total_debt FY2021 treated as 0" in r["assumptions"]
     # market cap = csv price 10 x cover-page shares 395
     assert r["price"] == 10 and r["shares_outstanding"] == 395 and r["market_cap"] == 3950
     assert r["price_date"] == "2022-03-01" and r["price_reliable"] == 0
@@ -109,7 +110,8 @@ def test_reverse_dcf_end_to_end(project, capsys):
     assert r["implied_growth"] is None and "FY2016" in reasons["implied_growth"]
     # ...but the no-dilution solve still works and round-trips
     g = r["implied_growth_no_dilution"]
-    assert enterprise_value_implied(240, g, 0.10, 15, 10) == pytest.approx(3950, rel=1e-6)
+    assert r["ev"] == 3850
+    assert enterprise_value_implied(240, g, 0.10, 15, 10) == pytest.approx(3850, rel=1e-6)
     # sensitivity grid: 4 discount rates x 5 multiples, all NULL here with the dilution reason
     rows = conn.execute("SELECT * FROM reverse_dcf_sensitivity WHERE ticker = 'TESTCO'").fetchall()
     assert len(rows) == 20 and all(x["implied_growth"] is None and x["reason"] for x in rows)
@@ -133,3 +135,23 @@ def test_reverse_dcf_without_dilution_model(project, capsys):
     g8, g11 = (conn.execute("SELECT implied_growth FROM reverse_dcf_sensitivity WHERE discount_rate=? AND "
                             "terminal_multiple=15", (dr,)).fetchone()[0] for dr in (0.08, 0.11))
     assert g11 > g8
+
+
+def test_htm_not_added_when_marketable_securities_reported(project, companyfacts):
+    import gzip
+
+    from conftest import K21, inst
+
+    # same company, but FY2021 also reports marketable securities of 50 (which may contain the HTM 100)
+    companyfacts["facts"]["us-gaap"]["MarketableSecuritiesCurrent"] = {"units": {"USD": [inst("2021-09-25", 50, K21)]}}
+    with gzip.open(project / "data" / "raw" / "companyfacts" / "CIK0001234567.json.gz", "wt") as fh:
+        json.dump(companyfacts, fh)
+    (project / "prices.csv").write_text("ticker,date,close,source\nTESTCO,2022-03-01,10,test\n")
+    cfg_text = (project / "config.yaml").read_text().replace("providers: [csv, yfinance]", "providers: [csv]")
+    (project / "config.yaml").write_text(cfg_text)
+    assert run(project, "ingest") == 0
+    assert run(project, "dcf", "--date", "2022-03-04") == 0
+    conn = sqlite3.connect(project / "data" / "dhandho.sqlite")
+    nd, assumptions = conn.execute("SELECT net_debt, assumptions FROM reverse_dcf WHERE ticker='TESTCO'").fetchone()
+    assert nd == -50
+    assert "held-to-maturity securities 100 NOT added" in assumptions

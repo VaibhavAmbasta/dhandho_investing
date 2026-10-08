@@ -60,6 +60,9 @@ reverse_dcf:
     # equity-method stakes) are treated as cash. They are liquid; AAPL's $78B
     # would otherwise be ignored.
     include_long_term_investments: true
+    # Held-to-maturity securities count as cash only when neither short- nor
+    # long-term investments are reported (otherwise they are probably inside them).
+    include_held_to_maturity: true
   history:
     cagr_years: 10
     # JUDGMENT: CAGR endpoints are N-year trailing means (3 = mean of years
@@ -233,11 +236,28 @@ concepts:
   short_term_investments:
     period: instant
     unit: USD
+    # Marketable securities and "other" short-term investments (e.g. KO's time
+    # deposits) are separate balance-sheet lines, so they are summed.
+    # ShortTermInvestments is a us-gaap TOTAL, so it is never added to them.
     strategies:
-      - MarketableSecuritiesCurrent
+      - sum:
+          required: []
+          optional: [MarketableSecuritiesCurrent, OtherShortTermInvestments]
       - ShortTermInvestments
       - AvailableForSaleSecuritiesDebtSecuritiesCurrent
       - AvailableForSaleSecuritiesCurrent
+    absent_note: "Not reported; company may hold none."
+
+  # EXTRA: held-to-maturity debt securities (e.g. CPRT's Treasury bills). Often
+  # already INSIDE a short-term investments line (COST), so net debt only counts
+  # them when no other securities line is reported. See JUDGMENT_CALLS #33.
+  held_to_maturity_securities:
+    period: instant
+    unit: USD
+    strategies:
+      - DebtSecuritiesHeldToMaturityAmortizedCostAfterAllowanceForCreditLoss
+      - DebtSecuritiesHeldToMaturityExcludingAccruedInterestAfterAllowanceForCreditLoss
+      - HeldToMaturitySecurities
     absent_note: "Not reported; company may hold none."
 
   # EXTRA: long-dated marketable securities. Whether these count as cash in net

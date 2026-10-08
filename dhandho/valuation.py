@@ -178,6 +178,18 @@ def value_ticker(conn: sqlite3.Connection, cfg: Config, ticker: str, provider: P
             continue
         net_debt += sign * v
         res.inputs["net_debt"].append({**prov, "sign": sign})
+    if nd_cfg.get("include_held_to_maturity", True):
+        v, reason, prov = facts.value("held_to_maturity_securities", last_fy)
+        if v is not None:
+            others = [c for c in ("short_term_investments", "long_term_investments")
+                      if facts.value(c, last_fy)[0] is not None]
+            if others:
+                res.assumptions.append(
+                    f"held-to-maturity securities {v:,.0f} NOT added to cash: {', '.join(others)} also reported "
+                    f"and probably include them")
+            else:
+                net_debt -= v
+                res.inputs["net_debt"].append({**prov, "sign": -1})
     res.set("net_debt", net_debt)
 
     # ---- shares, dilution -----------------------------------------------------

@@ -67,6 +67,8 @@ def build_companyfacts() -> dict:
         # opening balance under the restricted-cash tag (rank B). Rank A must win.
         "CashAndCashEquivalentsAtCarryingValue": {"USD": [inst(E19, 60, K19)]},
         "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents": {"USD": [inst(E19, 65, K20)]},
+        # Held-to-maturity Treasuries at FY2021, with no other securities line: counts as cash.
+        "DebtSecuritiesHeldToMaturityAmortizedCostAfterAllowanceForCreditLoss": {"USD": [inst(E21, 100, K21)]},
         "LongTermDebtNoncurrent": {"USD": [inst(E19, 900, K19), inst(E20, 950, K20)]},
         "LongTermDebtCurrent": {"USD": [inst(E19, 100, K19), inst(E21, 100, K21)]},
         "CommercialPaper": {"USD": [inst(E19, 50, K19), inst(E20, 20, K20)]},
