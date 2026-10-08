@@ -351,6 +351,22 @@ class CompanyResult:
     vintages: list[Vintage]
     values: list[ConceptValue]
     raw_facts: list[Fact]  # 10-K facts for mapped tags, for traceability
+    cover_shares: list[Fact] = field(default_factory=list)  # dei shares outstanding, any form
+
+
+COVER_SHARES_TAG = "dei:EntityCommonStockSharesOutstanding"
+
+
+def cover_share_facts(companyfacts: dict[str, Any]) -> list[Fact]:
+    """Cover-page shares outstanding from every filing type (10-K and 10-Q), so the
+    most recent count is available for market cap."""
+    body = (companyfacts.get("facts") or {}).get("dei", {}).get("EntityCommonStockSharesOutstanding", {})
+    out = []
+    for f in (body.get("units") or {}).get("shares", []):
+        out.append(Fact(tag=COVER_SHARES_TAG, unit="shares", start=None, end=_d(f["end"]), val=float(f["val"]),
+                        accn=f["accn"], form=f.get("form", ""), filed=_d(f["filed"]), fy=f.get("fy"),
+                        fp=f.get("fp"), frame=f.get("frame")))
+    return out
 
 
 def process_companyfacts(companyfacts: dict[str, Any], concepts: dict[str, ConceptSpec], ingest_cfg: dict) -> CompanyResult:
@@ -374,6 +390,7 @@ def process_companyfacts(companyfacts: dict[str, Any], concepts: dict[str, Conce
         vintages=vintages,
         values=values,
         raw_facts=[f for f in facts if f.tag in tags],
+        cover_shares=cover_share_facts(companyfacts),
     )
 
 

@@ -17,7 +17,56 @@ paths:
   tickers_file: tickers.txt
 
 prices:
-  provider: yfinance          # UNRELIABLE: unofficial scraper. Swap for a paid API later.
+  # Tried in order. "csv" reads prices_file (rows: ticker,date,close,source) so you
+  # can paste prices from any source you trust. "yfinance" is an UNRELIABLE
+  # unofficial scraper. Swap in a paid API later.
+  providers: [csv, yfinance]
+  prices_file: prices.csv
+  csv_reliable: false         # set true only if prices.csv comes from a source you trust
+  max_price_age_days: 7       # older quotes are used but flagged
+
+# ---------------------------------------------------------------------------
+# Phase 2: reverse DCF
+# ---------------------------------------------------------------------------
+screen:
+  # JUDGMENT: banks, insurers and other financials (SIC 6000-6799, from the SEC
+  # submissions API) are excluded. Owner FCF, debt and EV mean something
+  # different for them; results would be noise.
+  exclude_sic_ranges: [[6000, 6799]]
+
+reverse_dcf:
+  years: 10
+  discount_rate: 0.10           # base case (Buffett/Pabrai-style hurdle)
+  terminal_multiple: 15         # x year-10 owner FCF
+  sensitivity:
+    discount_rates: [0.08, 0.09, 0.10, 0.11]
+    terminal_multiples: [10, 12.5, 15, 17.5, 20]
+  # JUDGMENT: base owner FCF = latest fiscal year ("latest") or the mean of the
+  # last 3 ("avg3"). latest punishes temporary capex spikes; avg3 understates a
+  # fast grower's base.
+  base_fcf: latest
+  # Historical net dilution rate = CAGR of split-adjusted diluted shares over
+  # this many years. Shorter = reflects current buyback/SBC policy.
+  dilution_lookback_years: 5
+  # Model the share count explicitly (per-share value). See JUDGMENT_CALLS #24:
+  # with SBC already deducted from owner FCF this double counts SBC dilution and
+  # double credits buybacks. implied_growth_no_dilution is reported alongside.
+  model_dilution: true
+  # Solver bounds for implied growth. Outside them the result is NULL + reason.
+  growth_bounds: [-0.50, 1.00]
+  net_debt:
+    include_operating_leases: true
+    # JUDGMENT: long-term marketable DEBT securities (the mapped tags exclude
+    # equity-method stakes) are treated as cash. They are liquid; AAPL's $78B
+    # would otherwise be ignored.
+    include_long_term_investments: true
+  history:
+    cagr_years: 10
+    # JUDGMENT: CAGR endpoints are N-year trailing means (3 = mean of years
+    # t-2..t at each end). 1 = point-to-point. Owner FCF is too lumpy for a
+    # single-year endpoint.
+    endpoint_smoothing_years: 3
+    min_cagr_years: 5           # use a shorter span (and say so) if 10y is unavailable
 
 ingest:
   history_years: 15           # keep the most recent N fiscal years per company
@@ -35,6 +84,9 @@ ingest:
   # unadjusted stock split (XBRL comparatives are only split-adjusted in filings
   # made after the split).
   share_split_flag_ratio: 1.6
+  # Split detection: the same fiscal year's diluted shares in two consecutive
+  # 10-Ks. Ratios within this tolerance of 1 are noise, not splits.
+  split_ratio_tolerance: 0.02
 
 # ---------------------------------------------------------------------------
 # Concept -> ordered tag strategies.

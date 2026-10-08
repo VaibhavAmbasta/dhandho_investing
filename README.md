@@ -1,7 +1,7 @@
 # dhandho
 
 A value-investing screener for US stocks in the Pabrai/Buffett/Graham style, built on
-SEC EDGAR XBRL data. It is being built in phases; **Phase 1 (data layer) is implemented.**
+SEC EDGAR XBRL data. It is being built in phases; **Phase 1 (data layer) and Phase 2 (reverse DCF) are implemented.**
 
 ## Setup
 
@@ -21,7 +21,14 @@ dhandho ingest                 # tickers.txt -> SQLite (data/dhandho.sqlite)
 dhandho ingest --refresh       # ignore the cache and refetch
 dhandho coverage [--reasons]   # reports/coverage.{html,txt}, coverage_long.csv, tag_log.csv
 dhandho verify AAPL --years 3  # every raw number next to its XBRL tag and source filing
+dhandho dcf [TICKER ...] [--date YYYY-MM-DD] [--refresh-prices]
+                               # reports/reverse_dcf.{txt,csv}, reverse_dcf_sensitivity.csv
 ```
+
+Prices are tried in the order of `prices.providers`. `prices.csv` (`ticker,date,close,source`) lets you
+supply quotes from any source; yfinance is the unreliable fallback and needs network access to
+`query1.finance.yahoo.com`, `query2.finance.yahoo.com` and `fc.yahoo.com`. Every price used is cached
+in the `prices` table, so a run can be reproduced.
 
 ## Layout
 
@@ -35,6 +42,9 @@ dhandho verify AAPL --years 3  # every raw number next to its XBRL tag and sourc
 | `dhandho/coverage.py` | Coverage matrix, tag switches, missing values, restatements, split warnings |
 | `dhandho/verify.py` | Hand-verification printout |
 | `dhandho/prices.py` | `PriceProvider` interface; `YFinancePriceProvider` (**unreliable**, development only) |
+| `dhandho/shares.py` | Split adjustment inferred from restated SEC comparatives |
+| `dhandho/dcf.py` | Valuation maths (pure functions) |
+| `dhandho/valuation.py` | Phase 2 runner: inputs with provenance, NULL + reason, stated assumptions |
 | `JUDGMENT_CALLS.md` | Every accounting and data choice that changes numbers |
 
 ## Storage model

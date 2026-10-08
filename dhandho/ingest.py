@@ -59,7 +59,10 @@ def ingest(cfg: Config, client: EdgarClient, tickers: list[str], conn) -> list[I
                 raise ValueError("no annual 10-K periods found in companyfacts")
             result.cik = cik
             meta = client.cache_meta("companyfacts", f"CIK{cik:010d}") or {}
-            db.store_company(conn, ticker, result, meta.get("url"), meta.get("fetched_at"))
+            sub = client.submissions(cik)
+            sic = int(sub["sic"]) if str(sub.get("sic") or "").isdigit() else None
+            db.store_company(conn, ticker, result, meta.get("url"), meta.get("fetched_at"),
+                             sic=sic, sic_description=sub.get("sicDescription"))
             n_ok = sum(1 for v in result.values if v.status == "ok")
             msg = (
                 f"FY{result.periods[0].fiscal_year}-FY{result.periods[-1].fiscal_year}: "

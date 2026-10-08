@@ -113,4 +113,7 @@ def project(tmp_path: Path, companyfacts) -> Path:
         json.dump({"0": {"cik_str": 1234567, "ticker": "TESTCO", "title": "TestCo Inc."}}, fh)
     with gzip.open(cache / "companyfacts" / "CIK0001234567.json.gz", "wt") as fh:
         json.dump(companyfacts, fh)
+    (cache / "submissions").mkdir(parents=True)
+    with gzip.open(cache / "submissions" / "CIK0001234567.json.gz", "wt") as fh:
+        json.dump({"cik": "1234567", "sic": "3571", "sicDescription": "Electronic Computers", "filings": {}}, fh)
     return tmp_path

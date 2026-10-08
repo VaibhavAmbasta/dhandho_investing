@@ -16,7 +16,33 @@ CREATE TABLE IF NOT EXISTS companies (
     ticker         TEXT NOT NULL,
     name           TEXT,
     facts_url      TEXT,
-    facts_fetched_at TEXT
+    facts_fetched_at TEXT,
+    sic            INTEGER,
+    sic_description TEXT
+);
+
+-- dei:EntityCommonStockSharesOutstanding from every filing (cover page), for market cap.
+CREATE TABLE IF NOT EXISTS cover_shares (
+    cik      INTEGER NOT NULL,
+    as_of    TEXT NOT NULL,
+    value    REAL NOT NULL,
+    accn     TEXT NOT NULL,
+    form     TEXT NOT NULL,
+    filed    TEXT NOT NULL
+);
+
+-- Every price used, with its source, so a valuation can be reproduced.
+CREATE TABLE IF NOT EXISTS prices (
+    ticker     TEXT NOT NULL,
+    requested  TEXT NOT NULL,      -- the date asked for
+    as_of      TEXT NOT NULL,      -- the trading day the price is from
+    price      REAL NOT NULL,
+    currency   TEXT NOT NULL,
+    source     TEXT NOT NULL,
+    reliable   INTEGER NOT NULL,
+    note       TEXT,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (ticker, requested)
 );
 
 CREATE TABLE IF NOT EXISTS ingest_log (
@@ -111,7 +137,17 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a database was first created."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(companies)")}
+    for col, typ in (("sic", "INTEGER"), ("sic_description", "TEXT")):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE companies ADD COLUMN {col} {typ}")
+    conn.commit()
 
 
 def _s(d: dt.date | None) -> str | None:
@@ -127,15 +163,21 @@ def log_ingest(conn: sqlite3.Connection, ticker: str, cik: int | None, status: s
 
 
 def store_company(
-    conn: sqlite3.Connection, ticker: str, result: CompanyResult, facts_url: str | None, fetched_at: str | None
+    conn: sqlite3.Connection, ticker: str, result: CompanyResult, facts_url: str | None, fetched_at: str | None,
+    sic: int | None = None, sic_description: str | None = None,
 ) -> None:
     cik = result.cik
     with conn:
-        for table in ("raw_facts", "fiscal_periods", "concept_vintages", "concept_values"):
+        for table in ("raw_facts", "fiscal_periods", "concept_vintages", "concept_values", "cover_shares"):
             conn.execute(f"DELETE FROM {table} WHERE cik = ?", (cik,))
         conn.execute(
-            "INSERT OR REPLACE INTO companies (cik, ticker, name, facts_url, facts_fetched_at) VALUES (?,?,?,?,?)",
-            (cik, ticker, result.name, facts_url, fetched_at),
+            "INSERT OR REPLACE INTO companies (cik, ticker, name, facts_url, facts_fetched_at, sic, sic_description) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (cik, ticker, result.name, facts_url, fetched_at, sic, sic_description),
+        )
+        conn.executemany(
+            "INSERT INTO cover_shares VALUES (?,?,?,?,?,?)",
+            [(cik, _s(f.end), f.val, f.accn, f.form, _s(f.filed)) for f in result.cover_shares],
         )
         conn.executemany(
             "INSERT INTO raw_facts VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",

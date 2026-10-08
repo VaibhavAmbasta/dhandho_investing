@@ -3,6 +3,7 @@
   dhandho ingest   [--tickers FILE] [--refresh]   fetch (or reuse cached) SEC data -> SQLite
   dhandho coverage                                coverage report (text + HTML + CSV)
   dhandho verify TICKER [--years 3]               raw numbers next to XBRL tags, for hand-checking
+  dhandho dcf [--date YYYY-MM-DD] [--refresh-prices]  reverse DCF (Phase 2)
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import coverage, db, verify
+from . import coverage, db, dcf_report, valuation, verify
 from .config import ConfigError, load_config
 from .edgar import client_from_config, normalize_ticker
 from .ingest import ingest, read_tickers
@@ -61,6 +62,28 @@ def _cmd_verify(cfg, args) -> int:
     return 0
 
 
+def _cmd_dcf(cfg, args) -> int:
+    from .prices import provider_from_config
+
+    conn = db.connect(cfg.path("db_path"))
+    tickers = [normalize_ticker(t) for t in args.tickers] if args.tickers else [
+        r[0] for r in conn.execute("SELECT ticker FROM companies ORDER BY ticker")]
+    if not tickers:
+        print("no data; run `dhandho ingest` first", file=sys.stderr)
+        return 1
+    date = dt.date.fromisoformat(args.date) if args.date else dt.date.today()
+    provider = provider_from_config(cfg)
+    results = [valuation.value_ticker(conn, cfg, t, provider, date, args.refresh_prices) for t in tickers]
+    valuation.store(conn, results)
+    out_dir = cfg.path("reports_dir")
+    csvs = dcf_report.write_csvs(results, out_dir)
+    text = dcf_report.render_text(results, cfg)
+    (out_dir / "reverse_dcf.txt").write_text(text + "\n")
+    print(text)
+    print(f"\nwrote {out_dir / 'reverse_dcf.txt'}, " + ", ".join(str(p) for p in csvs))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="dhandho", description="Value-investing screener on SEC EDGAR data")
     p.add_argument("--config", default="config.yaml")
@@ -81,6 +104,12 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("ticker")
     s.add_argument("--years", type=int, default=3)
     s.set_defaults(fn=_cmd_verify)
+
+    s = sub.add_parser("dcf", help="reverse DCF: growth implied by the current price")
+    s.add_argument("tickers", nargs="*", help="default: every ingested ticker")
+    s.add_argument("--date", help="price date (default: today)")
+    s.add_argument("--refresh-prices", action="store_true", help="ignore cached prices")
+    s.set_defaults(fn=_cmd_dcf)
 
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
